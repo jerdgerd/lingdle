@@ -5,6 +5,7 @@ let hints = 0;
 const maxHints = 3;
 const maxGuesses = 6;
 let network;
+let lastSharedNode = -1;
 
 // Generate today's language using a pseudorandom algorithm
 function generateTodaysLanguage() {
@@ -117,10 +118,8 @@ function initializeNetwork() {
             hierarchical: {
                 direction: 'UD',
                 sortMethod: 'directed',
-                levelSeparation: 100,
-                nodeSpacing: 250,
-                blockShifting: true,
-                edgeMinimization: true,
+                levelSeparation: 75,
+                nodeSpacing: 350,
             }
         },
         nodes: {
@@ -177,6 +176,9 @@ function updateNetwork(languageCode, correct) {
     families.forEach((family, index) => {
         const id = `family_${index}_${family}`;
         const isShared = correctFamilies.includes(family);
+        if (isShared && index > lastSharedNode) {
+            lastSharedNode = index;
+        }
         if (!nodes.get(id)) {
             nodes.add({
                 id: id, 
@@ -221,14 +223,29 @@ function handleHintRequest() {
     hints++;
     const correctLanguage = languages[todaysLanguageCode];
     const families = correctLanguage["Pruned Language Families"].split(', ');
-    updateNetwork(todaysLanguageCode, true);
     const nodes = network.body.data.nodes;
-    for (let i = 0; i <= hints; i++) {
-        const id = `family_${i}_${families[i]}`;
-        const node = nodes.get(id);
-        if (node) {
-            nodes.update({id: id, hidden: false});
-        }
+    let parentId = null
+    if (lastSharedNode >= 0) {
+        parentId = `family_${lastSharedNode}_${families[lastSharedNode]}`;
+    }
+    lastSharedNode += 1;
+    let id = `family_${lastSharedNode}_${families[lastSharedNode]}`;
+    let label = '';
+    if (lastSharedNode == families.length) {
+        id = `language_${todaysLanguageCode}`;
+        label = correctLanguage.Language;
+    } else {
+        label = families[lastSharedNode];
+    }
+    nodes.add({
+        id: id, 
+        label: label, 
+        color: { background: '#4caf50', border: '#ffffff' },
+        font: { color: '#ffffff' }
+    });
+    if (parentId) {
+        const edges = network.body.data.edges;
+        edges.add({id: `${parentId}_${id}`, from: parentId, to: id});
     }
     updateGameStatus();
     network.fit();
@@ -262,16 +279,13 @@ function showScore() {
     guesses.forEach(guess => {
         scoreText += guess.correct ? '🟩' : '🟥';
     });
-    for (let i = guesses.length; i < maxGuesses; i++) {
-        scoreText += '⬜';
-    }
     scoreText += '\nHints used: ' + '💡'.repeat(hints);
     document.getElementById('scoreText').textContent = scoreText;
 
     // Add share button functionality
     const daysSinceStart = Math.floor((new Date() - new Date('2024-07-28')) / (1000 * 60 * 60 * 24));
     document.getElementById('shareBtn').addEventListener('click', () => {
-        const shareText = `Lingdle ${daysSinceStart}\n${scoreText}`;
+        const shareText = `Lingdle ${daysSinceStart}\n${scoreText}\njerdgerd.github.io/lingdle`;
         navigator.clipboard.writeText(shareText)
             .then(() => {
                 showToast('Copied to clipboard!');
