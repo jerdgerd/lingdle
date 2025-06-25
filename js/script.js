@@ -1,5 +1,5 @@
 // ================================
-// Lingdle – Main Game Logic (patched)
+// Lingdle – Main Game Logic (wiki‑enhanced)
 // ================================
 
 // Variables
@@ -12,21 +12,15 @@ let network;
 let lastSharedNode = -1;
 
 /* ------------------------------------------------------------------
-   Helpers to ensure the <div id="languageTree"> has real dimensions.
-   The recent CSS refactor removed explicit width/height, so we enforce
-   them via JS to guarantee the Vis‑Network canvas is allocated space.
+   Ensure <div id="languageTree"> has dimensions for Vis‑Network
 ------------------------------------------------------------------ */
 function setLanguageTreeSize() {
   const container = document.getElementById('languageTree');
   const wrapper = document.getElementById('languageTreeContainer');
   if (!container || !wrapper) return;
-
-  // Full width, inherit height from outer container (fallback to 400px)
   container.style.width = '100%';
   container.style.height = (wrapper.clientHeight || 400) + 'px';
 }
-
-// Re‑apply on resize so the graph keeps up with viewport changes
 window.addEventListener('resize', () => {
   setLanguageTreeSize();
   if (network) {
@@ -35,21 +29,20 @@ window.addEventListener('resize', () => {
   }
 });
 
-// ------------------------------------------------------------------
-// Generate today's language using a pseudorandom algorithm
-// ------------------------------------------------------------------
+/* ------------------------------------------------------------------
+   Daily language selector
+------------------------------------------------------------------ */
 function generateTodaysLanguage() {
   const startDate = new Date('2024-07-28');
   const today = new Date();
-  const daysSinceStart = Math.floor((today - startDate) / (1000 * 60 * 60 * 24));
+  const daysSinceStart = Math.floor((today - startDate) / 86_400_000); // ms in a day
   const languageCodes = Object.keys(languages);
-  const languageIndex = daysSinceStart % languageCodes.length;
-  todaysLanguageCode = languageCodes[languageIndex];
+  todaysLanguageCode = languageCodes[daysSinceStart % languageCodes.length];
 }
 
-// ------------------------------------------------------------------
-// Initialise the game
-// ------------------------------------------------------------------
+/* ------------------------------------------------------------------
+   Game initialisation
+------------------------------------------------------------------ */
 function initGame() {
   generateTodaysLanguage();
   document.getElementById('guessSection').style.display = 'block';
@@ -59,15 +52,21 @@ function initGame() {
   guesses = [];
   hints = 0;
   lastSharedNode = -1;
-  setLanguageTreeSize();            // NEW ⇒ ensure container sized **before** building network
+  setLanguageTreeSize();
   loadAudio(todaysLanguageCode);
   updateGameStatus();
   initializeNetwork();
   populateLanguageList();
+
+  // Remove sidebar (if any) when starting a fresh game
+  const oldSidebar = document.getElementById('wikiSidebar');
+  if (oldSidebar) oldSidebar.remove();
 }
 
+document.addEventListener('DOMContentLoaded', initGame);
+
 /* ------------------------------------------------------------------
-   Populate language list for autofill
+   Auto‑complete datalist
 ------------------------------------------------------------------ */
 function populateLanguageList() {
   const languageList = document.getElementById('languageList');
@@ -79,140 +78,142 @@ function populateLanguageList() {
   });
 }
 
-/* ------------------------------------------------------------------
-   Live filter for datalist
------------------------------------------------------------------- */
 function handleLanguageInput() {
-  const input = document.getElementById('languageInput');
-  const value = input.value.toLowerCase();
-  const datalist = document.getElementById('languageList');
-
-  datalist.innerHTML = '';
-
+  const val = document.getElementById('languageInput').value.toLowerCase();
+  const list = document.getElementById('languageList');
+  list.innerHTML = '';
   Object.values(languages)
-    .filter(lang => lang.Language.toLowerCase().startsWith(value))
-    .forEach(lang => {
-      const option = document.createElement('option');
-      option.value = lang.Language;
-      datalist.appendChild(option);
+    .filter(l => l.Language.toLowerCase().startsWith(val))
+    .forEach(l => {
+      const o = document.createElement('option');
+      o.value = l.Language;
+      list.appendChild(o);
     });
 }
 
 /* ------------------------------------------------------------------
    Utility helpers
 ------------------------------------------------------------------ */
-function showError(message) {
-  document.getElementById('errorMessage').textContent = message;
+const showError = msg => (document.getElementById('errorMessage').textContent = msg);
+const isLanguageSupported = lang => Object.values(languages).some(l => l.Language.toLowerCase() === lang.toLowerCase());
+const getLanguageCode = lang => Object.keys(languages).find(c => languages[c].Language.toLowerCase() === lang.toLowerCase());
+
+/* ------------------------------------------------------------------
+   Wikipedia API helpers
+------------------------------------------------------------------ */
+async function fetchWikiInfo(languageName) {
+  const query = encodeURIComponent(`${languageName} language`);
+  try {
+    const resp = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${query}`);
+    if (!resp.ok) throw new Error('Wiki fetch failed');
+    const data = await resp.json();
+    showWikiSidebar(data);
+  } catch (e) {
+    console.error(e);
+  }
 }
 
-function isLanguageSupported(language) {
-  return Object.values(languages).some(
-    lang => lang.Language.toLowerCase() === language.toLowerCase()
-  );
-}
-
-function getLanguageCode(language) {
-  return Object.keys(languages).find(
-    code => languages[code].Language.toLowerCase() === language.toLowerCase()
-  );
+function showWikiSidebar(data) {
+  let sidebar = document.getElementById('wikiSidebar');
+  if (!sidebar) {
+    sidebar = document.createElement('div');
+    sidebar.id = 'wikiSidebar';
+    Object.assign(sidebar.style, {
+      position: 'fixed',
+      top: '0',
+      right: '0',
+      width: '320px',
+      height: '100vh',
+      overflowY: 'auto',
+      backgroundColor: 'var(--surface)',
+      borderLeft: '1px solid var(--border)',
+      color: 'var(--text)',
+      fontFamily: "'JetBrains Mono', monospace",
+      padding: '1rem',
+      zIndex: 1050,
+    });
+    document.body.appendChild(sidebar);
+  }
+  sidebar.innerHTML = `
+    <h3 style="font-size:1.25rem;font-weight:700;margin-top:0">${data.title}</h3>
+    ${data.originalimage ? `<img src="${data.originalimage.source}" style="max-width:100%;border:1px solid var(--border);margin-bottom:0.75rem">` : ''}
+    <div style="font-size:0.9rem;line-height:1.4">${data.extract_html || data.extract}</div>
+    <p style="margin-top:0.75rem"><a href="https://en.wikipedia.org/wiki/${encodeURIComponent(data.title)}" target="_blank" style="color:var(--accent-primary);text-decoration:none">Read more on Wikipedia ↗</a></p>
+  `;
 }
 
 /* ------------------------------------------------------------------
-   Handle a guess submission
+   Guess submission handler
 ------------------------------------------------------------------ */
 function handleLanguageSubmission() {
-  const languageInput = document.getElementById('languageInput').value.trim();
-  if (!isLanguageSupported(languageInput)) {
-    showError('This language is not supported yet');
-    return;
-  }
+  const input = document.getElementById('languageInput').value.trim();
+  if (!isLanguageSupported(input)) return showError('This language is not supported yet');
+  const code = getLanguageCode(input);
+  const correct = code === todaysLanguageCode;
+  guesses.push({ guess: input, correct });
 
-  const languageCode = getLanguageCode(languageInput);
-  const isCorrect = languageCode === todaysLanguageCode;
-
-  guesses.push({ guess: languageInput, correct: isCorrect });
-  updateNetwork(languageCode, isCorrect);
-
-  if (isCorrect || guesses.length >= maxGuesses) {
+  updateNetwork(code, correct);
+  if (correct) {
+    fetchWikiInfo(input);
+    showScore();
+  } else if (guesses.length >= maxGuesses) {
+    fetchWikiInfo(languages[todaysLanguageCode].Language);
     showScore();
   } else {
     showError('Incorrect guess. Try again.');
   }
-
   updateGameStatus();
 }
 
 /* ------------------------------------------------------------------
-   Build Vis‑Network graph
+   Vis‑Network setup
 ------------------------------------------------------------------ */
 function initializeNetwork() {
   const container = document.getElementById('languageTree');
   const data = { nodes: new vis.DataSet([]), edges: new vis.DataSet([]) };
-
   const options = {
-    layout: {
-      hierarchical: {
-        direction: 'UD',
-        sortMethod: 'directed',
-        levelSeparation: 75,
-        nodeSpacing: 350
-      }
-    },
+    layout: { hierarchical: { direction: 'UD', levelSeparation: 75, nodeSpacing: 350 } },
     nodes: {
       shape: 'box',
       font: { size: 30, face: 'JetBrains Mono' },
       borderWidth: 2,
       shadow: true,
-      size: 60
+      size: 60,
     },
-    edges: {
-      width: 3,
-      shadow: true,
-      smooth: { type: 'cubicBezier', forceDirection: 'horizontal', roundness: 0.4 }
-    },
+    edges: { width: 3, shadow: true, smooth: { type: 'cubicBezier', forceDirection: 'horizontal', roundness: 0.4 } },
     physics: false,
-    interaction: { dragNodes: false, zoomView: true, dragView: true }
+    interaction: { dragNodes: false, zoomView: true, dragView: true },
   };
-
   network = new vis.Network(container, data, options);
-
-  // Keep canvas inside parent scroll area
   network.on('afterDrawing', () => {
     const canvas = container.querySelector('canvas');
     if (canvas) canvas.style.position = 'absolute';
   });
-
   network.once('afterDrawing', () => {
-    network.setSize('100%', '100%'); // obey the container we just sized
+    network.setSize('100%', '100%');
     network.fit({ animation: { duration: 600, easingFunction: 'easeOutQuad' } });
   });
 }
 
 /* ------------------------------------------------------------------
-   Update/fill the language‑family tree
+   Build / colour the network tree
 ------------------------------------------------------------------ */
 function updateNetwork(languageCode, correct) {
-  const language = languages[languageCode];
-  const correctLanguage = languages[todaysLanguageCode];
-  const families = language['Pruned Language Families'].split(', ');
-  const correctFamilies = correctLanguage['Pruned Language Families'].split(', ');
+  const lang = languages[languageCode];
+  const answerLang = languages[todaysLanguageCode];
+  const families = lang['Pruned Language Families'].split(', ');
+  const answerFamilies = answerLang['Pruned Language Families'].split(', ');
   const { nodes, edges } = network.body.data;
 
   let parentId = null;
-  families.forEach((family, index) => {
-    const id = `family_${index}_${family}`;
-    const isShared = correctFamilies.includes(family);
-    if (isShared && index > lastSharedNode) lastSharedNode = index;
+  families.forEach((family, idx) => {
+    const id = `family_${idx}_${family}`;
+    const shared = answerFamilies.includes(family);
+    if (shared && idx > lastSharedNode) lastSharedNode = idx;
 
     if (!nodes.get(id)) {
-      nodes.add({
-        id,
-        label: family,
-        color: { background: isShared ? '#34a853' : '#f28b82', border: '#ffffff' },
-        font: { color: '#ffffff' }
-      });
-    } else if (isShared) {
-      // update to shared (green) if previously red
+      nodes.add({ id, label: family, color: { background: shared ? '#34a853' : '#f28b82', border: '#ffffff' }, font: { color: '#ffffff' } });
+    } else if (shared) {
       nodes.update({ id, color: { background: '#34a853', border: '#ffffff' } });
     }
 
@@ -223,132 +224,99 @@ function updateNetwork(languageCode, correct) {
     parentId = id;
   });
 
-  const languageId = `language_${languageCode}`;
-  if (!nodes.get(languageId)) {
-    nodes.add({
-      id: languageId,
-      label: language.Language,
-      color: { background: correct ? '#34a853' : '#f28b82', border: '#ffffff' },
-      font: { color: '#ffffff' }
-    });
-    edges.add({ id: `${parentId}_${languageId}`, from: parentId, to: languageId });
+  const langId = `language_${languageCode}`;
+  if (!nodes.get(langId)) {
+    nodes.add({ id: langId, label: lang.Language, color: { background: correct ? '#34a853' : '#f28b82', border: '#ffffff' }, font: { color: '#ffffff' } });
+    edges.add({ id: `${parentId}_${langId}`, from: parentId, to: langId });
   }
 
   network.fit({ animation: { duration: 400, easingFunction: 'easeOutQuad' } });
 }
 
 /* ------------------------------------------------------------------
-   Provide a hint – reveal the next family or the answer itself
+   Hint logic
 ------------------------------------------------------------------ */
 function handleHintRequest() {
   if (hints >= maxHints) return;
   hints++;
-
-  const correctLanguage = languages[todaysLanguageCode];
-  const families = correctLanguage['Pruned Language Families'].split(', ');
+  const answer = languages[todaysLanguageCode];
+  const families = answer['Pruned Language Families'].split(', ');
   const { nodes, edges } = network.body.data;
 
   let parentId = null;
-  if (lastSharedNode >= 0) {
-    parentId = `family_${lastSharedNode}_${families[lastSharedNode]}`;
-  }
-
+  if (lastSharedNode >= 0) parentId = `family_${lastSharedNode}_${families[lastSharedNode]}`;
   lastSharedNode += 1;
 
-  let id, label;
-  if (lastSharedNode === families.length) {
-    id = `language_${todaysLanguageCode}`;
-    label = correctLanguage.Language;
-  } else {
-    label = families[lastSharedNode];
-    id = `family_${lastSharedNode}_${label}`;
-  }
+  const isLast = lastSharedNode === families.length;
+  const id = isLast ? `language_${todaysLanguageCode}` : `family_${lastSharedNode}_${families[lastSharedNode]}`;
+  const label = isLast ? answer.Language : families[lastSharedNode];
 
   if (!nodes.get(id)) {
     nodes.add({ id, label, color: { background: '#34a853', border: '#ffffff' }, font: { color: '#ffffff' } });
     if (parentId) edges.add({ id: `${parentId}_${id}`, from: parentId, to: id });
   }
-
   updateGameStatus();
   network.fit({ animation: { duration: 300, easingFunction: 'easeOutQuad' } });
 }
 
 /* ------------------------------------------------------------------
-   Audio loading helper
+   Audio helper
 ------------------------------------------------------------------ */
-function loadAudio(languageCode) {
-  const audioPath = `LanguageAudio/${languageCode}.wav`;
-  document.getElementById('audioSource').src = audioPath;
+function loadAudio(code) {
+  document.getElementById('audioSource').src = `LanguageAudio/${code}.wav`;
   document.getElementById('languageAudio').load();
 }
 
 /* ------------------------------------------------------------------
-   Update the guess / hint counters
+   Status bar (guesses & hints)
 ------------------------------------------------------------------ */
 function updateGameStatus() {
-  const guessesLeft = document.getElementById('guessesLeft');
-  const hintsLeft = document.getElementById('hintsLeft');
-
-  guessesLeft.innerHTML =
-    'Guesses: ' +
-    '<span class="status-icon available"></span>'.repeat(maxGuesses - guesses.length) +
-    '<span class="status-icon used"></span>'.repeat(guesses.length);
-
-  hintsLeft.innerHTML =
-    'Hints: ' +
-    '<span class="status-icon available"></span>'.repeat(maxHints - hints) +
-    '<span class="status-icon used"></span>'.repeat(hints);
+  const guessSpan = '<span class="status-icon available"></span>'.repeat(maxGuesses - guesses.length) + '<span class="status-icon used"></span>'.repeat(guesses.length);
+  const hintSpan = '<span class="status-icon available"></span>'.repeat(maxHints - hints) + '<span class="status-icon used"></span>'.repeat(hints);
+  document.getElementById('guessesLeft').innerHTML = `Guesses: ${guessSpan}`;
+  document.getElementById('hintsLeft').innerHTML = `Hints: ${hintSpan}`;
 }
 
 /* ------------------------------------------------------------------
-   Final scoring modal & clipboard share
+   Score modal & sharing
 ------------------------------------------------------------------ */
 function showScore() {
   const modal = new bootstrap.Modal(document.getElementById('scoreModal'));
-  let scoreText = guesses.map(g => (g.correct ? '🟩' : '🟥')).join('');
-  scoreText += '\nHints used: ' + '💡'.repeat(hints);
-  document.getElementById('scoreText').textContent = scoreText;
+  const blocks = guesses.map(g => (g.correct ? '🟩' : '🟥')).join('');
+  document.getElementById('scoreText').textContent = `${blocks}\nHints used: ${'💡'.repeat(hints)}`;
 
-  // share to clipboard
-  const daysSinceStart = Math.floor((Date.now() - new Date('2024-07-28')) / 86_400_000);
+  const dayNum = Math.floor((Date.now() - new Date('2024-07-28')) / 86_400_000);
   document.getElementById('shareBtn').onclick = () => {
-    const shareText = `Lingdle ${daysSinceStart}\n${scoreText}\njerdgerd.github.io/lingdle`;
-    navigator.clipboard.writeText(shareText)
-      .then(() => showToast('Copied to clipboard!'))
-      .catch(() => showToast('Failed to copy to clipboard'));
+    const txt = `Lingdle ${dayNum}\n${blocks}\nHints used: ${'💡'.repeat(hints)}\n` + 'jerdgerd.github.io/lingdle';
+    navigator.clipboard.writeText(txt).then(() => showToast('Copied to clipboard!')).catch(() => showToast('Failed to copy'));
   };
 
-  // countdown to next puzzle
   const nextDay = new Date();
   nextDay.setHours(24, 0, 0, 0);
-  const countdownElement = document.getElementById('countdown');
+  const countdownEl = document.getElementById('countdown');
   const interval = setInterval(() => {
-    const diff = nextDay - new Date();
+    const diff = nextDay - Date.now();
     if (diff <= 0) return clearInterval(interval);
-    const hrs = Math.floor(diff / 3_600_000);
-    const mins = Math.floor((diff % 3_600_000) / 60_000);
-    const secs = Math.floor((diff % 60_000) / 1_000);
-    countdownElement.textContent = `Next game in: ${hrs}h ${mins}m ${secs}s`;
-  }, 1_000);
+    const h = Math.floor(diff / 3_600_000);
+    const m = Math.floor((diff % 3_600_000) / 60_000);
+    const s = Math.floor((diff % 60_000) / 1_000);
+    countdownEl.textContent = `Next game in: ${h}h ${m}m ${s}s`;
+  }, 1000);
 
   modal.show();
 }
 
-function showToast(message) {
+const showToast = msg => {
   const toast = document.getElementById('toast');
-  toast.querySelector('.toast-body').textContent = message;
+  toast.querySelector('.toast-body').textContent = msg;
   toast.classList.remove('hide');
   toast.classList.add('show');
-  setTimeout(() => toast.classList.replace('show', 'hide'), 3_000);
-}
+  setTimeout(() => toast.classList.replace('show', 'hide'), 3000);
+};
 
 /* ------------------------------------------------------------------
-   Event listeners & bootstrap
+   Event listeners
 ------------------------------------------------------------------ */
 document.getElementById('submitBtn').addEventListener('click', handleLanguageSubmission);
 document.getElementById('hintBtn').addEventListener('click', handleHintRequest);
 document.getElementById('languageInput').addEventListener('input', handleLanguageInput);
-
-document.addEventListener('DOMContentLoaded', () => {
-  initGame();
-});
